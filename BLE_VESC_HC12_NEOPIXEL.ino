@@ -2,6 +2,7 @@
 #include <Adafruit_NeoPixel.h>
 #include <VescUart.h>
 
+
 //#define DEBUG 1
 #define PIN         PB9// On Trinket or Gemma, suggest changing this to 1
 #define NUMPIXELS   24
@@ -30,7 +31,7 @@ void setup() {
 long lastTime_COMM_GET_VALUES = 0;
 
 long lastBLEms = 0;
-bool bleRequested = false;
+bool blePassMode = true;
 
 int return_mode  = 0;
 
@@ -46,7 +47,7 @@ void loop() {
 
   //  standalone mode without BLE
   if (thisMainLoopMillis - lastBLEms > 5000) {
-    bleRequested  = false;
+    blePassMode  = false;
   }
 
   // sleep mode
@@ -59,22 +60,25 @@ void loop() {
   while (Serial1.available()) {
     uint8_t inByte = Serial1.read();
 
-    if (bleRequested) {
+    if (blePassMode) {
       Serial2.write(inByte);
     }
 
     return_mode = UART.getVescValues(inByte);
 
+    if (return_mode > 0 ) {
 
-    if (return_mode > 0) {
-      check_brake();
-      pixels.show();
+      if (!blePassMode) {
+        pixels.show();
+      }
+
 
 #ifdef DEBUG
       Serial.print("return_mode ");
       Serial.println(return_mode);
       Serial.println(thisMainLoopMillis - lastTime_COMM_GET_VALUES );
 #endif
+
       lastTime_COMM_GET_VALUES = thisMainLoopMillis;
 
     } else {
@@ -86,9 +90,9 @@ void loop() {
 
   // BLE -> VESC(HC12) =============================
   while (Serial2.available()) {
-    volatile  uint8_t inByte = Serial2.read();
+    uint8_t inByte = Serial2.read();
     Serial1.write(inByte);
-    bleRequested = true;
+    blePassMode = true;
     lastBLEms = thisMainLoopMillis;
     lastDataMillis = thisMainLoopMillis;
     sleepMode = false;
@@ -97,24 +101,26 @@ void loop() {
   // ms
   spin(20);
 
+
 }
 
 
 // SPIN ======================================================================================
-long currnetTime;
 
-void spin(int desiredMillis) {
+void spin(const int desiredMillis) {
   static long lastSpinTime;
 
   if (thisMainLoopMillis - lastSpinTime >  desiredMillis) {
-    lastSpinTime = currnetTime;
+    lastSpinTime = thisMainLoopMillis;
     looping_function();
+
+    if (sleepMode)
+    {
+      sleep();
+    }
   }
 
-  if (sleepMode)
-  {
-    sleep();
-  }
+
 
 
 }
@@ -123,10 +129,14 @@ int brakeState = 0;
 enum BRAKE_CASE  {NO_BRAKE, NEUTRAL, ACCELERATION, BRAKE_DECELERATION, BRAKE_REVERSE };
 int before_brake_status = 0;
 
+bool blePassModeFirstTime = true;
+
 int ledCount = 0;
+
+
 void looping_function() {
-  if (thisMainLoopMillis - lastTime_COMM_GET_VALUES > 20 && !bleRequested) {
-    lastTime_COMM_GET_VALUES = thisMainLoopMillis;
+  if (thisMainLoopMillis - lastTime_COMM_GET_VALUES > 20 && !blePassMode) {
+    //    lastTime_COMM_GET_VALUES = thisMainLoopMillis;
     UART.requestVescGetValues();
 
 #ifdef DEBUG
@@ -135,24 +145,34 @@ void looping_function() {
 #endif
 
   }
-  //  check_brake();
-#ifdef DEBUG
-  Serial.println(UART.data.rpm);
-#endif
 
+  if (blePassMode) {
+    if (blePassModeFirstTime) {
+      blePassModeFirstTime = false;
+      setColor(100, 5, 5);
+      pixels.show();
+    }
+  } else {
+    blePassModeFirstTime = true;
+  }
+
+  check_brake();
 
 }
 
 
 void check_brake(void) {
 
+  if (UART.data.rpm <= 0) {
+    brakeState = BRAKE_REVERSE;
+  }
   // BRAKE_DECELERATION
-  if (UART.data.avgMotorCurrent < 0) {
+  else if (UART.data.avgMotorCurrent < 0) {
     brakeState = BRAKE_DECELERATION;
   }
 
   // NEUTRAL
-  else if (UART.data.avgMotorCurrent == 0 && UART.data.rpm >= 0 ) {
+  else if (UART.data.avgMotorCurrent == 0 && UART.data.rpm > 0 ) {
     brakeState = NEUTRAL;
   }
 
@@ -170,7 +190,10 @@ void check_brake(void) {
   if (tempRPM > 15000) {
     tempRPM = 15000;
   }
-  int rpm_mapped = map(UART.data.rpm, 0, 15000, 0, 255);
+  int rpm_mapped = map(UART.data.rpm, 0, 20000, 0, 255);
+  if (rpm_mapped < 0) {
+    rpm_mapped  = 0;
+  }
 
   if (brakeState != before_brake_status) {
     ledCount = 0;
@@ -179,28 +202,46 @@ void check_brake(void) {
   switch (brakeState) {
 
     case BRAKE_DECELERATION:
-      setColor(255, 0, 0);
-      break;
 
-    case NEUTRAL:
       if (ledCount++ < 5) {
-        setColor(255, 255, 255);
+        setColor(255, 0, 0);
 
-      } else if (ledCount++ < 130) {
-        setColor(30, 3, 3);
+      } else if (ledCount++ < 25) {
+        setColor(50, 0, 0);
       } else {
         ledCount = 0;
       }
 
       break;
 
+    case NEUTRAL:
+
+      //      if (ledCount++ < 125) {
+      //        setColor(3, 0, 0);
+      //      } else if (ledCount++ < 130) {
+      //        setColor(30, 30, 30);
+      //      } else {
+      //        ledCount = 0;
+      //      }
+      setColor(0, rpm_mapped / 2, rpm_mapped);
+
+
+      break;
+
     case ACCELERATION:
-      setColor(rpm_mapped / 2, rpm_mapped / 2, rpm_mapped);
+      setColor(0, rpm_mapped, rpm_mapped);
       break;
 
 
     case BRAKE_REVERSE:
-      setColor(150, 0, 0);
+      if (ledCount++ < 150) {
+        setColor(ledCount, 0, 0);
+      } else if (ledCount++ < 300) {
+        setColor(300 - ledCount, 0, 0);
+      } else {
+        ledCount = 0;
+      }
+
       break;
 
     default:
@@ -217,8 +258,8 @@ void check_brake(void) {
 void setColor(int r, int g, int b) {
   for (int i = 0; i < NUMPIXELS; i++) {
     pixels.setPixelColor(i, pixels.Color(r, g, b));
-
   }
+
 }
 
 void sleep() {
@@ -233,5 +274,7 @@ void sleep() {
     pixels.show();
   }
   delay(3000);
+}
 
+void enterBLEModeLED() {
 }
